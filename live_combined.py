@@ -27,7 +27,7 @@ feature_cols = bundle["feature_cols"]
 class_means = bundle["class_means"]  # {label: [mean_angle_per_feature_col]}
 joint_ids = [int(c.split("_")[1]) for c in feature_cols]
 
-CONF_THRESH = 85.0        # below this -> neutral/idle
+CONF_THRESH = 55.0        # below this -> neutral/idle
 ANGLE_DIFF_THRESH = 15.0  # mean abs angle diff vs ref -> correct pose cutoff
 
 base_options = python.BaseOptions(model_asset_path=MODEL_PATH)
