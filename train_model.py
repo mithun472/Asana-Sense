@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.model_selection import train_test_split
@@ -6,6 +7,19 @@ import joblib
 
 CSV_PATH = "train_angles.csv"
 MODEL_OUT = "extra_trees_pose_model.pkl"
+
+# Floor for per-joint std so a joint that happens to be perfectly rigid
+# in the training images (std == 0) doesn't become an impossible-to-pass
+# tolerance at inference time.
+MIN_JOINT_STD_DEG = 5.0
+
+# Percentile of the TRUE class's own predicted probability (on the
+# validation split) used as that class's live confidence threshold.
+# Using a per-class value instead of one flat number is what fixes
+# poses (e.g. plank) whose angle profile is naturally less distinctive
+# and therefore produces lower confidence even when correctly predicted.
+CONF_PERCENTILE = 10
+DEFAULT_CONF_THRESH = 55.0  # fallback if a class has too few val samples
 
 df = pd.read_csv(CSV_PATH)
 
@@ -46,5 +60,64 @@ print("\nTop 10 important joint angles:")
 for name, score in importances[:10]:
     print(f"  {name}: {score:.4f}")
 
-joblib.dump({"model": clf, "feature_cols": feature_cols}, MODEL_OUT)
+# ---------------------------------------------------------------------
+# Per-class reference angles: mean + std of EVERY joint angle, learned
+# from the training images. class_means feeds the "how far off is this
+# joint" diff in live_combined.py; class_stds lets that diff be judged
+# per-joint instead of with one blanket degree threshold, since some
+# joints (e.g. a supporting leg) are naturally much more rigid than
+# others (e.g. a raised arm) even within the same correct pose.
+# ---------------------------------------------------------------------
+class_means = {}
+class_stds = {}
+for label, group in df.groupby("label"):
+    means = group[feature_cols].mean().tolist()
+    stds = group[feature_cols].std(ddof=0).fillna(0.0).tolist()
+    stds = [max(s, MIN_JOINT_STD_DEG) for s in stds]
+    class_means[label] = means
+    class_stds[label] = stds
+
+# ---------------------------------------------------------------------
+# Per-class confidence threshold. Poses with less distinctive joint
+# angles (e.g. plank, where most joints are simply straight, close to
+# a neutral/resting profile) will legitimately get lower max-probability
+# scores from the classifier than a highly distinctive pose like tree,
+# even when the prediction is correct. A single global CONF_THRESH
+# therefore under-fires for some classes and over-fires for others.
+# We instead look, per class, at how confident the model was on
+# validation rows that truly belong to that class and pick a low
+# percentile of that as the live threshold.
+# ---------------------------------------------------------------------
+val_proba = clf.predict_proba(X_val)
+class_index = {c: i for i, c in enumerate(clf.classes_)}
+
+class_thresholds = {}
+y_val_arr = y_val.reset_index(drop=True)
+for label in clf.classes_:
+    mask = (y_val_arr == label).values
+    n = mask.sum()
+    if n < 5:
+        # not enough validation rows for this class to trust a percentile
+        class_thresholds[label] = DEFAULT_CONF_THRESH
+        continue
+    true_class_proba = val_proba[mask, class_index[label]] * 100
+    thresh = float(np.percentile(true_class_proba, CONF_PERCENTILE))
+    # never go below a sane floor, so a genuinely ambiguous class
+    # doesn't end up accepting near-random guesses
+    class_thresholds[label] = max(thresh, 30.0)
+
+print("\nPer-class confidence thresholds (live-detection cutoff):")
+for label, t in class_thresholds.items():
+    print(f"  {label}: {t:.1f}%")
+
+joblib.dump(
+    {
+        "model": clf,
+        "feature_cols": feature_cols,
+        "class_means": class_means,
+        "class_stds": class_stds,
+        "class_thresholds": class_thresholds,
+    },
+    MODEL_OUT,
+)
 print(f"\nModel saved -> {MODEL_OUT}")
