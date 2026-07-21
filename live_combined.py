@@ -100,6 +100,7 @@ with vision.PoseLandmarker.create_from_options(options) as landmarker:
                 # class) drives both the joint dot color and the on-screen
                 # "fix: ..." callouts.
                 joint_status = {}  # landmark_id -> "ok" | "off" | None (n/a)
+                joint_diff = {}    # landmark_id -> abs angle diff from class mean (deg)
 
                 if all(v is not None for v in feature_vec):
                     pred = clf.predict([feature_vec])[0]
@@ -123,6 +124,7 @@ with vision.PoseLandmarker.create_from_options(options) as landmarker:
                             diff = abs(feat_val - ref_val)
                             is_off = diff > (STD_MULTIPLIER * std_val)
                             joint_status[jid] = "off" if is_off else "ok"
+                            joint_diff[jid] = diff
                             per_joint_diff.append((jid, diff, is_off))
 
                         overall_diff = sum(d for _, d, _ in per_joint_diff) / len(per_joint_diff)
@@ -154,18 +156,28 @@ with vision.PoseLandmarker.create_from_options(options) as landmarker:
                         color = (0, 0, 255)      # default (untracked joint)
                     cv2.circle(frame, (cx, cy), 4, color, -1)
 
-                # draw angle numbers on key limb joints
+                # draw per-joint numbers: diff-from-reference (deg) when we
+                # have a confident classification, else raw joint angle
                 for j in DISPLAY_JOINTS:
                     if j not in JOINT_TRIPLETS:
                         continue
-                    ang = angles[j]
-                    if ang is None:
-                        continue
                     lm = pose_landmarks[j]
                     cx, cy = int(lm.x * w), int(lm.y * h)
+
+                    if j in joint_diff:
+                        d = joint_diff[j]
+                        txt = f"{d:+.0f}"
+                        color = (0, 0, 255) if joint_status.get(j) == "off" else (0, 220, 0)
+                    else:
+                        ang = angles[j]
+                        if ang is None:
+                            continue
+                        txt = f"{int(ang)}"
+                        color = (255, 255, 0)
+
                     cv2.putText(
-                        frame, f"{int(ang)}", (cx + 8, cy - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2
+                        frame, txt, (cx + 8, cy - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2
                     )
 
         cv2.putText(

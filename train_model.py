@@ -110,6 +110,29 @@ print("\nPer-class confidence thresholds (live-detection cutoff):")
 for label, t in class_thresholds.items():
     print(f"  {label}: {t:.1f}%")
 
+# ---------------------------------------------------------------------
+# Per-image angle diff vs class mean. For every training image, compute
+# abs(angle - class_mean) per joint. Same math live_combined.py uses at
+# inference, run here over the fed dataset so diff distribution can be
+# eyeballed / used for eval (e.g. sanity check MIN_JOINT_STD_DEG, spot
+# mislabeled images with abnormally huge diffs).
+# ---------------------------------------------------------------------
+diff_rows = []
+for _, row in df.iterrows():
+    label = row["label"]
+    means = class_means[label]
+    diffs = {"label": label}
+    for col, mean_val in zip(feature_cols, means):
+        diffs[col] = abs(row[col] - mean_val)
+    diff_rows.append(diffs)
+
+diff_df = pd.DataFrame(diff_rows)
+diff_df.to_csv("train_angle_diffs.csv", index=False)
+print(f"\nPer-image angle diffs -> train_angle_diffs.csv ({len(diff_df)} rows)")
+
+print("\nMean abs diff per joint, per class:")
+print(diff_df.groupby("label")[feature_cols].mean().round(1))
+
 joblib.dump(
     {
         "model": clf,
