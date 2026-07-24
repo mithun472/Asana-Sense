@@ -5,6 +5,8 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, accuracy_score
 import joblib
 
+from angle_utils import KEY_JOINTS
+
 CSV_PATH = "train_angles.csv"
 MODEL_OUT = "extra_trees_pose_model.pkl"
 
@@ -26,7 +28,15 @@ df = pd.read_csv(CSV_PATH)
 # Drop angle columns that are ALWAYS None (face joints with no valid triplet)
 df = df.dropna(axis=1, how="all")
 
-feature_cols = [c for c in df.columns if c.startswith("angle_")]
+# Only train on the key body joints (shoulders, elbows, hips, knees,
+# ankles) - angle_utils still computes face-landmark "angles" (nose,
+# eyes, mouth chain) because they're geometrically valid, but they're
+# pure noise for pose classification and add dimensionality for
+# nothing. Restricting here also keeps feature_cols aligned 1:1 with
+# what build_feedback_sentences() knows how to talk about.
+feature_cols = [c for c in df.columns if c.startswith("angle_")
+                 and int(c.split("_")[1]) in KEY_JOINTS]
+
 
 # Drop any row still missing a value (pose not fully detected in that image)
 before = len(df)
@@ -109,6 +119,29 @@ for label in clf.classes_:
 print("\nPer-class confidence thresholds (live-detection cutoff):")
 for label, t in class_thresholds.items():
     print(f"  {label}: {t:.1f}%")
+
+# ---------------------------------------------------------------------
+# Per-image angle diff vs class mean. For every training image, compute
+# abs(angle - class_mean) per joint. Same math live_combined.py uses at
+# inference, run here over the fed dataset so diff distribution can be
+# eyeballed / used for eval (e.g. sanity check MIN_JOINT_STD_DEG, spot
+# mislabeled images with abnormally huge diffs).
+# ---------------------------------------------------------------------
+diff_rows = []
+for _, row in df.iterrows():
+    label = row["label"]
+    means = class_means[label]
+    diffs = {"label": label}
+    for col, mean_val in zip(feature_cols, means):
+        diffs[col] = abs(row[col] - mean_val)
+    diff_rows.append(diffs)
+
+diff_df = pd.DataFrame(diff_rows)
+diff_df.to_csv("train_angle_diffs.csv", index=False)
+print(f"\nPer-image angle diffs -> train_angle_diffs.csv ({len(diff_df)} rows)")
+
+print("\nMean abs diff per joint, per class:")
+print(diff_df.groupby("label")[feature_cols].mean().round(1))
 
 joblib.dump(
     {
